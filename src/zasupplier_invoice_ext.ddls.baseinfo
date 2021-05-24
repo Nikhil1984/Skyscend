@@ -1,0 +1,13 @@
+{
+"BASEINFO":
+{
+"FROM":
+[
+"I_SUPPLIERINVOICE"
+],
+"ASSOCIATED":
+[],
+"BASE":
+[]
+}
+}
