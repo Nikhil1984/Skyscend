@@ -16,39 +16,49 @@ CLASS lcl_class DEFINITION.
 
 *Convert ABAP to JSON
     TYPES:BEGIN OF ty_items,
-            item_no          TYPE string,
-            line_item_no     TYPE string,
-            po_id            TYPE string,
-            material_no      TYPE string,
-            material_desc    TYPE string,
-            plant            TYPE string,
-            storage_location TYPE string,
-            quantity         TYPE ekpo-menge,
-            tax              TYPE ekpo-netwr,
-            unit             TYPE string,
-            delivery_charges TYPE ekpo-netwr,
-            net_price        TYPE ekpo-netwr,
+            item_no            TYPE string,
+            line_item_no       TYPE string,
+            po_id              TYPE string,
+            material_no        TYPE string,
+            material_desc      TYPE string,
+            plant              TYPE string,
+            storage_location   TYPE string,
+            quantity           TYPE ekpo-menge,
+            tax                TYPE ekpo-netwr,
+            unit               TYPE string,
+            delivery_charges   TYPE ekpo-netwr,
+            net_price          TYPE ekpo-netwr,
+            document_item_text TYPE string,
+            debit_credit_code  TYPE string,
           END OF ty_items.
 
     TYPES: BEGIN OF ty_json_req,
-             id                    TYPE string,
-             fiscal_year           TYPE string,
-             invtyp                TYPE string,
-             supplier_invoice_no   TYPE string,
-             vendor_erp_id         TYPE string,
-             company_code          TYPE string,
-             total_payable_amount  TYPE ekpo-netwr,
-             discount              TYPE ekpo-netwr,
-             currency_key          TYPE string,
-             status                TYPE string,
-             ts                    TYPE i,
-             invoice_due_date      TYPE i,
-             reversed              TYPE boolean,
-             reversal_document_no  TYPE string,
-             reversal_fiscal_year  TYPE string,
-             reversal_posting_date TYPE i,
-             payment_block         TYPE string,
-             items                 TYPE STANDARD TABLE OF ty_items WITH EMPTY KEY,
+             id                            TYPE string,
+             fiscal_year                   TYPE string,
+             invtyp                        TYPE string,
+             supplier_invoice_no           TYPE string,
+             vendor_erp_id                 TYPE string,
+             company_code                  TYPE string,
+             total_payable_amount          TYPE ekpo-netwr,
+             discount                      TYPE ekpo-netwr,
+             currency_key                  TYPE string,
+             status                        TYPE string,
+             ts                            TYPE i,
+             invoice_due_date              TYPE i,
+             reversed                      TYPE boolean,
+             reversal_document_no          TYPE string,
+             reversal_fiscal_year          TYPE string,
+             reversal_posting_date         TYPE i,
+             payment_block                 TYPE string,
+             supplier_name                 TYPE string,
+             payment_terms                 TYPE string,
+             accounting_document_type_name TYPE string,
+             document_date                 TYPE i,
+             posting_date                  TYPE i,
+             tax_amount                    TYPE i,
+             cleared                       TYPE boolean,
+             cleared_date                  TYPE i,
+             items                         TYPE STANDARD TABLE OF ty_items WITH EMPTY KEY,
            END OF ty_json_req,
 
            BEGIN OF ty_bsik,
@@ -63,6 +73,12 @@ CLASS lcl_class DEFINITION.
              textl TYPE t008t-textl,
            END OF ty_t008t,
 
+            BEGIN OF ty_lfa1,
+             lifnr TYPE lfa1-lifnr,
+             name1 TYPE lfa1-name1,
+             name2 TYPE lfa1-name2,
+           END OF ty_lfa1,
+
            BEGIN OF ty_rev,
              stblg TYPE stblg,
            END OF ty_rev.
@@ -76,6 +92,7 @@ CLASS lcl_class DEFINITION.
 
     DATA: gs_json_req TYPE ty_json_req,
           gs_items    TYPE ty_items,
+          it_lfa1     TYPE TABLE OF ty_lfa1,
           gt_due      TYPE TABLE OF ty_due,
           lt_blocked  TYPE TABLE OF ty_bsik,
           lt_t008t    TYPE TABLE OF ty_t008t,
@@ -134,6 +151,7 @@ CLASS lcl_class IMPLEMENTATION.
 *Get details of fetched invoice
       SELECT  a~belnr,
               a~gjahr,
+              a~bldat,
               a~budat,
               a~xblnr,
               a~lifnr,
@@ -150,6 +168,7 @@ CLASS lcl_class IMPLEMENTATION.
               a~vgart,
               a~zlspr,
               a~wmwst1,
+              a~zterm,
               b~buzei,
               b~ebeln,
               b~ebelp,
@@ -182,6 +201,7 @@ CLASS lcl_class IMPLEMENTATION.
 
           SELECT  a~belnr,
               a~gjahr,
+              a~bldat,
               a~budat,
               a~xblnr,
               a~lifnr,
@@ -198,6 +218,7 @@ CLASS lcl_class IMPLEMENTATION.
               a~vgart,
               a~zlspr,
               a~wmwst1,
+              a~zterm,
               b~buzei,
               b~ebeln,
               b~ebelp,
@@ -228,6 +249,12 @@ CLASS lcl_class IMPLEMENTATION.
 
           DELETE gt_data WHERE vgart = 'RS'.
         ENDIF.
+
+     SELECT lifnr,name1,name2
+       FROM lfa1
+       INTO TABLE @it_lfa1
+        FOR ALL ENTRIES IN @gt_data
+      WHERE lifnr EQ @gt_data-lifnr.
 
         SELECT supplierinvoice,
                fiscalyear,
@@ -327,6 +354,32 @@ CLASS lcl_class IMPLEMENTATION.
           CATCH cx_root INTO lo_root.
         ENDTRY.
 
+            TRY.
+            CLEAR lv_tstamp.
+            cl_pco_utility=>convert_abap_timestamp_to_java( EXPORTING iv_date      = <ls_data>-bldat
+                                                                      iv_time      = '000000'
+                                                            IMPORTING ev_timestamp = lv_tstamp ).
+
+            gs_json_req-document_date  = CONV #( lv_tstamp+0(10) ).
+          CATCH cx_root INTO lo_root.
+        ENDTRY.
+
+
+        TRY.
+            CLEAR lv_tstamp.
+            cl_pco_utility=>convert_abap_timestamp_to_java( EXPORTING iv_date      = <ls_data>-budat
+                                                                      iv_time      = '000000'
+                                                            IMPORTING ev_timestamp = lv_tstamp ).
+
+            gs_json_req-posting_date    =  CONV #( lv_tstamp+0(10) ).
+          CATCH cx_root INTO lo_root.
+        ENDTRY.
+
+        READ TABLE it_lfa1 INTO DATA(gs_lfa1) WITH KEY lifnr = <ls_data>-lifnr.
+        IF sy-subrc = 0.
+          CONCATENATE gs_lfa1-name1 gs_lfa1-name2 INTO DATA(lv_name) SEPARATED BY space.
+          gs_json_req-supplier_name    = lv_name.
+        ENDIF.
 **Passing Reversal Document Details
         IF <ls_data>-stblg IS NOT INITIAL.
           gs_json_req-reversed              = abap_true.
@@ -387,7 +440,7 @@ CLASS lcl_class IMPLEMENTATION.
         me->api_call( it_ebeln = lt_po iv_dest = 'SKYSCEND_STAGE'
                       iv_key   = 'ZmpSaktYoU8ofLpaqOIVV4H3LB3uIJiqNIydeHqf'
                       iv_buyer = '605bacef6247b88b7f367278').
-         WRITE:/ 'FOR PRODUCTION'.
+        WRITE:/ 'FOR PRODUCTION'.
         me->api_call( it_ebeln = lt_po iv_dest = 'SKYSCEND_PROD1'
                       iv_key   = 'UznmzUEBo672GPmEF9oVC2hnz11LE8Ug5BnYFUaw'
                       iv_buyer = '6009bf877e4576bd3b7799f6').

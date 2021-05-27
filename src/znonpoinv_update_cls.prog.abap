@@ -12,18 +12,20 @@ CLASS lcl_class DEFINITION.
 
 *Convert ABAP to JSON
     TYPES:BEGIN OF ty_items,
-            item_no          TYPE string,
-            line_item_no     TYPE string,
-            po_id            TYPE string,
-            material_no      TYPE string,
-            material_desc    TYPE string,
-            plant            TYPE string,
-            storage_location TYPE string,
-            quantity         TYPE ekpo-menge,
-            tax              TYPE ekpo-netwr,
-            unit             TYPE string,
-            delivery_charges TYPE ekpo-netwr,
-            net_price        TYPE ekpo-netwr,
+            item_no            TYPE string,
+            po_line_item_no    TYPE string,
+            po_id              TYPE string,
+            material_no        TYPE string,
+            material_desc      TYPE string,
+            plant              TYPE string,
+            storage_location   TYPE string,
+            quantity           TYPE ekpo-menge,
+            tax                TYPE ekpo-netwr,
+            unit               TYPE string,
+            delivery_charges   TYPE ekpo-netwr,
+            net_price          TYPE ekpo-netwr,
+            document_item_text TYPE string,
+            debit_credit_code  TYPE string,
           END OF ty_items.
 
     TYPES: BEGIN OF ty_due,
@@ -34,24 +36,32 @@ CLASS lcl_class DEFINITION.
            END OF ty_due.
 
     TYPES: BEGIN OF ty_json_req,
-             id                    TYPE string,
-             fiscal_year           TYPE string,
-             invtyp                TYPE string,
-             supplier_invoice_no   TYPE string,
-             vendor_erp_id         TYPE string,
-             company_code          TYPE string,
-             total_payable_amount  TYPE ekpo-netwr,
-             discount              TYPE ekpo-netwr,
-             currency_key          TYPE string,
-             status                TYPE string,
-             ts                    TYPE i,
-             invoice_due_date      TYPE i,
-             reversed              TYPE boolean,
-             reversal_document_no  TYPE string,
-             reversal_fiscal_year  TYPE string,
-             reversal_posting_date TYPE i,
-             payment_block         TYPE string,
-             items                 TYPE STANDARD TABLE OF ty_items WITH EMPTY KEY,
+             id                            TYPE string,
+             fiscal_year                   TYPE string,
+             inv_typ                       TYPE string,
+             supplier_invoice_no           TYPE string,
+             vendor_erp_id                 TYPE string,
+             company_code                  TYPE string,
+             total_payable_amount          TYPE ekpo-netwr,
+             discount                      TYPE ekpo-netwr,
+             currency_key                  TYPE string,
+             status                        TYPE string,
+             ts                            TYPE i,
+             invoice_due_date              TYPE i,
+             reversed                      TYPE boolean,
+             reversal_document_no          TYPE string,
+             reversal_fiscal_year          TYPE string,
+             reversal_posting_date         TYPE i,
+             payment_block                 TYPE string,
+             supplier_name                 TYPE string,
+             payment_terms                 TYPE string,
+             accounting_document_type_name TYPE string,
+             document_date                 TYPE i,
+             posting_date                  TYPE i,
+             tax_amount                    TYPE i,
+             cleared                       TYPE boolean,
+             cleared_date                  TYPE i,
+             items                         TYPE STANDARD TABLE OF ty_items WITH EMPTY KEY,
            END OF ty_json_req,
 
            BEGIN OF ty_bsik,
@@ -60,6 +70,12 @@ CLASS lcl_class DEFINITION.
              zlspr TYPE bsik-zlspr,
            END OF ty_bsik,
 
+           BEGIN OF ty_lfa1,
+             lifnr TYPE lfa1-lifnr,
+             name1 TYPE lfa1-name1,
+             name2 TYPE lfa1-name2,
+           END OF ty_lfa1,
+
            BEGIN OF ty_t008t,
              spras TYPE t008t-spras,
              zahls TYPE t008t-zahls,
@@ -67,6 +83,7 @@ CLASS lcl_class DEFINITION.
            END OF ty_t008t.
 
     DATA: gs_json_req TYPE ty_json_req,
+          it_lfa1     TYPE TABLE OF ty_lfa1,
           gt_due      TYPE TABLE OF ty_due,
           lt_blocked  TYPE TABLE OF ty_bsik,
           lt_t008t    TYPE TABLE OF ty_t008t,
@@ -116,6 +133,7 @@ CLASS lcl_class IMPLEMENTATION.
 *Get details of fetched invoice
     SELECT  a~belnr,
             a~gjahr,
+            a~bldat,
             a~budat,
             a~xblnr,
             a~bukrs,
@@ -138,6 +156,7 @@ CLASS lcl_class IMPLEMENTATION.
             b~erfme,
             b~matnr,
             b~menge,
+            b~zterm,
             b~mwskz,
             b~wrbtr,
             b~werks,
@@ -145,9 +164,14 @@ CLASS lcl_class IMPLEMENTATION.
             b~sgtxt,
 **            b~bstme,
 **            b~bnkan,
-            b~dmbtr
+            b~dmbtr,
 **            c~txz01,
 **            c~lgort
+              b~shkzg,
+             b~netdt,
+              b~augdt,
+              b~augcp,
+              b~augbl
       INTO TABLE @gt_data
       FROM bkpf AS a
       JOIN bseg AS b
@@ -167,6 +191,7 @@ CLASS lcl_class IMPLEMENTATION.
 
         SELECT  a~belnr,
               a~gjahr,
+              a~bldat,
               a~budat,
               a~xblnr,
               a~bukrs,
@@ -186,12 +211,18 @@ CLASS lcl_class IMPLEMENTATION.
               b~erfme,
               b~matnr,
               b~menge,
+              b~zterm,
               b~mwskz,
               b~wrbtr,
               b~werks,
               b~koart,
               b~sgtxt,
-              b~dmbtr
+              b~dmbtr,
+              b~shkzg,
+              b~netdt,
+              b~augdt,
+              b~augcp,
+              b~augbl
         INTO TABLE @gt_data
         FROM bkpf AS a
         JOIN bseg AS b
@@ -208,6 +239,12 @@ CLASS lcl_class IMPLEMENTATION.
 
         DELETE gt_data WHERE xreversal = 2.
       ENDIF.
+
+      SELECT lifnr,name1,name2
+       FROM lfa1
+       INTO TABLE @it_lfa1
+        FOR ALL ENTRIES IN @gt_data
+      WHERE lifnr EQ @gt_data-lifnr.
 
       SELECT supplierinvoice,
                fiscalyear,
@@ -288,24 +325,77 @@ CLASS lcl_class IMPLEMENTATION.
 
         gs_json_req-id               = <ls_data>-belnr.
         gs_json_req-fiscal_year      = <ls_data>-gjahr.
-        gs_json_req-invtyp           = 'N'.
+        gs_json_req-inv_typ           = 'NP'.
         gs_json_req-supplier_invoice_no = <ls_data>-xblnr.
         gs_json_req-company_code     = <ls_data>-bukrs.
+
+        READ TABLE it_lfa1 INTO DATA(gs_lfa1) WITH KEY lifnr = <ls_data>-lifnr.
+        IF sy-subrc = 0.
+          CONCATENATE gs_lfa1-name1 gs_lfa1-name2 INTO DATA(lv_name) SEPARATED BY space.
+          gs_json_req-supplier_name    = lv_name.
+        ENDIF.
+*        gs_json_req-payment_terms    = <ls_data>-budat.
 
         READ TABLE gt_data INTO DATA(gs_data) WITH KEY belnr = <ls_data>-belnr koart = 'K'.
         IF sy-subrc = 0.
           gs_json_req-discount         = <ls_data>-wskto.
           gs_json_req-vendor_erp_id    = |{ <ls_data>-lifnr ALPHA = OUT }|.
-          gs_json_req-total_payable_amount = <ls_data>-dmbtr.
           CONDENSE gs_json_req-vendor_erp_id.
+          gs_json_req-total_payable_amount = <ls_data>-dmbtr.
+
+          TRY.
+              cl_pco_utility=>convert_abap_timestamp_to_java( EXPORTING iv_date      = <ls_data>-netdt
+                                                                        iv_time      = '000000'
+                                                              IMPORTING ev_timestamp = DATA(lv_tstamp) ).
+
+              gs_json_req-invoice_due_date   = CONV #( lv_tstamp+0(10) ).
+            CATCH cx_root INTO DATA(lo_root).
+          ENDTRY.
+          CLEAR lv_tstamp.
+
+*        gs_json_req-invoice_due_date   = 1623745270.
+          gs_json_req-payment_terms     = <ls_data>-zterm.
+          IF <ls_data>-augbl IS NOT INITIAL.
+            gs_json_req-cleared     = abap_true.
+          ENDIF.
+
+          TRY.
+              cl_pco_utility=>convert_abap_timestamp_to_java( EXPORTING iv_date      = <ls_data>-augdt
+                                                                        iv_time      = '000000'
+                                                              IMPORTING ev_timestamp = lv_tstamp ).
+
+              gs_json_req-cleared_date    = CONV #( lv_tstamp+0(10) ).
+            CATCH cx_root INTO lo_root.
+          ENDTRY.
+          CLEAR lv_tstamp.
+
         ENDIF.
 
-        gs_json_req-currency_key     = <ls_data>-waers.
+        TRY.
+            CLEAR lv_tstamp.
+            cl_pco_utility=>convert_abap_timestamp_to_java( EXPORTING iv_date      = <ls_data>-bldat
+                                                                      iv_time      = '000000'
+                                                            IMPORTING ev_timestamp = lv_tstamp ).
 
-*        READ TABLE lt_dd07v ASSIGNING FIELD-SYMBOL(<ls_dd07>) WITH KEY domvalue_l = <ls_data>-bstat.
-*        IF sy-subrc = 0.
-*          gs_json_req-status           = <ls_dd07>-ddtext.
-*        ENDIF.
+            gs_json_req-document_date  = CONV #( lv_tstamp+0(10) ).
+          CATCH cx_root INTO lo_root.
+        ENDTRY.
+
+
+        TRY.
+            CLEAR lv_tstamp.
+            cl_pco_utility=>convert_abap_timestamp_to_java( EXPORTING iv_date      = <ls_data>-budat
+                                                                      iv_time      = '000000'
+                                                            IMPORTING ev_timestamp = lv_tstamp ).
+
+            gs_json_req-posting_date    =  CONV #( lv_tstamp+0(10) ).
+          CATCH cx_root INTO lo_root.
+        ENDTRY.
+
+
+*        gs_json_req-tax_amount       = <ls_data>-wmwst.
+        gs_json_req-currency_key = <ls_data>-waers.
+        gs_json_req-accounting_document_type_name = 'Vendor Invoice'.
 
         IF <ls_data>-bstat = ' '.
           gs_json_req-status           = 'Posted'.
@@ -318,26 +408,12 @@ CLASS lcl_class IMPLEMENTATION.
         TRY.
             cl_pco_utility=>convert_abap_timestamp_to_java( EXPORTING iv_date      = <ls_data>-cpudt
                                                                       iv_time      = <ls_data>-cputm
-                                                            IMPORTING ev_timestamp = DATA(lv_tstamp) ).
+                                                            IMPORTING ev_timestamp = lv_tstamp ).
             IF lv_tstamp IS NOT INITIAL.
               gs_json_req-ts              = CONV #( lv_tstamp+0(10) ).
             ENDIF.
-          CATCH cx_root INTO DATA(lo_root).
+          CATCH cx_root INTO lo_root.
         ENDTRY.
-
-*        TRY.
-*            CLEAR lv_tstamp.
-*            cl_pco_utility=>convert_abap_timestamp_to_java( EXPORTING iv_date      = VALUE #( gt_due[ belnr = <ls_data>-belnr
-*                                                                                                      gjahr = <ls_data>-gjahr
-*                                                                                                      bukrs = <ls_data>-bukrs ]-netdt OPTIONAL )
-*                                                                      iv_time      = '000000'
-*                                                            IMPORTING ev_timestamp = lv_tstamp ).
-*
-*            gs_json_req-invoice_due_date   = CONV #( lv_tstamp+0(10) ).
-*          CATCH cx_root INTO lo_root.
-*        ENDTRY.
-
-        gs_json_req-invoice_due_date   = 1623745270.
 
 ***Passing Reversal Document Details
         IF <ls_data>-xreversal EQ 1.
@@ -371,7 +447,7 @@ CLASS lcl_class IMPLEMENTATION.
         APPEND INITIAL LINE TO gs_json_req-items ASSIGNING FIELD-SYMBOL(<ls_item>).
         <ls_item>-item_no          = <ls_data>-buzei.
         <ls_item>-material_no       = condense( |{ <ls_data>-matnr ALPHA = OUT }| ).
-        <ls_item>-material_desc     = <ls_data>-sgtxt.
+*        <ls_item>-material_desc     = <ls_data>-sgtxt.
         <ls_item>-plant             = <ls_data>-werks.
 *      <ls_item>-storage_location  = <ls_data>-lgort.
         <ls_item>-quantity          = <ls_data>-menge.
@@ -379,6 +455,8 @@ CLASS lcl_class IMPLEMENTATION.
         <ls_item>-unit              = <ls_data>-erfme.
 *      <ls_item>-delivery_charges  = <ls_data>-bnkan.
         <ls_item>-net_price         = <ls_data>-wrbtr.
+        <ls_item>-document_item_text = <ls_data>-sgtxt.
+        <ls_item>-debit_credit_code = <ls_data>-shkzg.
       ENDIF.
 
       AT END OF belnr.
