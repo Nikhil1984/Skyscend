@@ -3,11 +3,15 @@
 {
 "FROM":
 [
+"I_SUPPLIERINVOICEPRELIMDATA",
 "RBKP"
 ],
 "ASSOCIATED":
 [],
 "BASE":
-[]
+[],
+"ANNO_REF":
+[],
+"VERSION":0
 }
 }
